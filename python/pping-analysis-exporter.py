@@ -1,4 +1,6 @@
 #!/usr/bin/python
+# NOTE: THIS CODE IS DEPRECATED AND MAY BE REMOVED IN THE FUTURE
+#
 # To be used with pping running in machine-readable mode
 # Pipe pping's output into this script
 #   e.g. sudo ./pping -i p0 -f "tcp port 30731" -m | ./pping-analysis-exporter
