@@ -140,6 +140,9 @@ static vector<IPv4Range> localRanges; // Similar to 'localIP', but for other
                                       // addresses/ranges. This is useful
                                       // in hosts acting as routers or NATs.
 
+// Prometheus Gauge vectors (will be instantiated later in main())
+static GaugeVec flowGaugeVec;
+
 // save capture time of packet using its flow + TSval as key.  If key
 // exists, don't change it.  The same TSval may appear on multiple
 // packets so this retains the first (oldest) appearance which may
@@ -316,7 +319,7 @@ static void process_packet(const Packet& pkt)
     tsInfo* ti = getTStm(dststr + "+" + srcstr + "+" +
                          std::to_string(rcv_tsecr));
     if (ti && ti->t > 0.0) {
-	// this packet is the return "pping" --
+        // this packet is the return "pping" --
         // process it for packet's src
         double t = ti->t;
         double rtt = capTm - t; // RTT of src to capture point
@@ -345,9 +348,14 @@ static void process_packet(const Packet& pkt)
                    fmtTimeDiff(fr->min).c_str());
 #endif
         }
+
         printf(" %s\n", fstr.c_str());
         ti->t = -t;     //leaves an entry in the TS table to avoid saving this
                         // TSval again, mark it negative to indicate it's been used
+
+        // Update Prometheus Gauge
+        vector<std::string> labelVals = {ipsstr, ipdstr, std::to_string(t_tcp->dport())};
+        flowGaugeVec.WithLabelValues(labelVals).Set(rtt);
     }
 }
 
@@ -536,8 +544,8 @@ int main(int argc, char* const* argv)
     std::string listenAddr(":9876"); // HTTP endpoint for Prometheus to scrape
     vector<std::string> strRanges; // Temp for optargs
     vector<string> gaugeLabels = {"srcIP", "dstIP", "dstPort"};
-    GaugeVec flowMedGaugeVec = GaugeVec("pping_service_rtt", "Per-flow running" \
-            "median RTT from source IP to a given destination IP/port", gaugeLabels);
+    flowGaugeVec = GaugeVec("pping_service_rtt", "Per-flow RTT " \
+            "from source IP to a given destination IP/port", gaugeLabels);
 
     // Set up signal catching
     struct sigaction action;
