@@ -1,6 +1,7 @@
 /**********************************************************************
- pping - Pollere Basic Passive Ping
+ pping - Basic Passive Ping w/ Prometheus Exporter Functionality
 
+ Copyright (C) 2020  Thomas Lin
  Copyright (C) 2017  Kathleen Nichols, Pollere, Inc.
 
     This program is free software; you can redistribute it and/or modify
@@ -75,6 +76,8 @@
 #include <thread>
 #include <chrono>
 
+#include "promClient.h"
+
 using namespace Tins;
 
 class flowRec
@@ -133,7 +136,6 @@ static std::string localIP;         // ignore pp through this address
 static bool filtLocal = true;
 static std::string filter("tcp");    // default bpf filter
 static int64_t flushInt = 1000000;  // stdout flush interval (~uS)
-
 
 // save capture time of packet using its flow + TSval as key.  If key
 // exists, don't change it.  The same TSval may appear on multiple
@@ -413,6 +415,8 @@ static struct option opts[] = {
     { "tsvalMaxAge", required_argument, nullptr, 'M' },
     { "flowMaxIdle", required_argument, nullptr, 'F' },
     { "help",      no_argument,       nullptr, 'h' },
+    { "listen", required_argument, nullptr, 'a' },
+    { "localSubnet", required_argument, nullptr, 'L' },
     { 0, 0, 0, 0 }
 };
 
@@ -454,6 +458,14 @@ static void help(const char* pname) {
 "\n"
 "  --flowMaxIdle num  flows idle longer than <num> are deleted (default 300s)\n"
 "\n"
+"  -a|--listen addr   HTTP listening address for Prometheus to scrape.\n"
+"                     Default: 0.0.0.0:9876.\n"
+"\n"
+"  -L|--localSubnet   Local subnet range to ignore, specified in CIDR format\n"
+"                     (e.g. 172.16.0.0/24). Can be specified multiple times.\n"
+"                     NOTE: If the -l (or --showLocal) flag is enabled, then\n"
+"                     this flag will not be considered.\n"
+"\n"
 "  -h|--help          print help then exit\n"
 ;
 }
@@ -478,8 +490,46 @@ static void signalHandler(int sigVal) {
     }
 }
 
+// Validate strRanges are proper CIDR notation and return IPv4Range object
+IPv4Range convertStrRange(string range) {
+    auto slashIdx = range.find('/');
+    if (slashIdx == string::npos) {
+        std::cerr << "ERROR: " << range << " is valid CIDR notation" << std::endl;
+        throw invalid_address();
+    }
+
+    string ip = range.substr(0, slashIdx);
+    string cidr = range.substr(slashIdx + 1);
+
+    if (ip.size() == 0 || cidr.size() == 0) {
+        std::cerr << "ERROR: " << range << " is valid CIDR notation" << std::endl;
+        throw invalid_address();
+    }
+
+    IPv4Address ipAddr = IPv4Address(ip);
+    int cidrInt = stoi(cidr);
+
+    // libtins seems to treat /32 as /0... manually return range of 1
+    if (cidrInt == 32) {
+        return IPv4Range(ipAddr, ipAddr);
+    }
+
+    return ipAddr / cidrInt;
+}
+
 int main(int argc, char* const* argv)
 {
+    // ========== PROMETHEUS EXPORTER ==========
+    std::string listenAddr(":9876"); // HTTP endpoint for Prometheus to scrape
+    vector<IPv4Range> ignoreRanges; // Similar to 'filtLocal', but for other
+                                      // addresses/ranges as well. This is useful
+                                      // in hosts acting as routers or NATs.
+    vector<std::string> strRanges; // Temp for optargs
+
+    vector<string> gaugeLabels = {"srcIP", "dstIP", "dstPort"};
+    GaugeVec flowMedGaugeVec = GaugeVec("pping_service_rtt", "Per-flow running" \
+            "median RTT from source IP to a given destination IP/port", gaugeLabels);
+
     // Set up signal catching
     struct sigaction action;
     action.sa_handler = signalHandler;
@@ -494,7 +544,7 @@ int main(int argc, char* const* argv)
         help(argv[0]);
         exit(1);
     }
-    for (int c; (c = getopt_long(argc, argv, "i:r:f:c:s:hlmqv",
+    for (int c; (c = getopt_long(argc, argv, "i:r:f:c:s:a:L:hlmqv",
                                  opts, nullptr)) != -1; ) {
         switch (c) {
         case 'i': liveInp = true; fname = optarg; break;
@@ -510,12 +560,23 @@ int main(int argc, char* const* argv)
         case 'M': tsvalMaxAge = atof(optarg); break;
         case 'F': flowMaxIdle = atof(optarg); break;
         case 'h': help(argv[0]); exit(0);
+        case 'a': listenAddr = std::string(optarg); break;
+        case 'L': strRanges.push_back(std::string(optarg)); break;
         }
     }
     if (optind < argc || fname.empty()) {
         usage(argv[0]);
         exit(1);
     }
+
+    // Validate strRanges are proper CIDR notation and add to ignoreRanges
+    for (auto str: strRanges) {
+        ignoreRanges.push_back(convertStrRange(str));
+    }
+
+    // Start Prometheus exporter
+    // TODO: Make path configurable?
+    StartPromServer(listenAddr.c_str(), "/metrics");
 
     {
         SnifferConfiguration config;
