@@ -132,10 +132,13 @@ static int64_t offTm = -1;      // first packet capture time (used to
 static bool machineReadable = false; // machine or human readable output
 static double capTm, startm;        // (in seconds)
 static int pktCnt, not_tcp, no_TS, not_v4or6, uniDir;
-static std::string localIP;         // ignore pp through this address
+static IPv4Address localIP;         // ignore pp through this address
 static bool filtLocal = true;
 static std::string filter("tcp");    // default bpf filter
 static int64_t flushInt = 1000000;  // stdout flush interval (~uS)
+static vector<IPv4Range> localRanges; // Similar to 'localIP', but for other
+                                      // addresses/ranges. This is useful
+                                      // in hosts acting as routers or NATs.
 
 // save capture time of packet using its flow + TSval as key.  If key
 // exists, don't change it.  The same TSval may appear on multiple
@@ -207,6 +210,16 @@ static std::string fmtTimeDiff(double dt)
     char buf[10];
     snprintf(buf, sizeof(buf), fmt, dt, SIprefix);
     return buf;
+}
+
+static bool ipRangesContains(const vector<IPv4Range>& ranges, const IPv4Address& addr) {
+    for (auto range: ranges) {
+        if (range.contains(addr)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static void process_packet(const Packet& pkt)
@@ -296,7 +309,7 @@ static void process_packet(const Packet& pkt)
 
     double arr_fwd = fr->bytesSnt + pkt.pdu()->size();
     fr->bytesSnt = arr_fwd;
-    if (!filtLocal || (localIP != ipdstr)) {
+    if (!filtLocal || !ipRangesContains(localRanges, ipdstr)) {
         addTS(fstr + "+" + std::to_string(rcv_tsval),
               new tsInfo(capTm, arr_fwd, fr->bytesDep));
     }
@@ -521,11 +534,7 @@ int main(int argc, char* const* argv)
 {
     // ========== PROMETHEUS EXPORTER ==========
     std::string listenAddr(":9876"); // HTTP endpoint for Prometheus to scrape
-    vector<IPv4Range> ignoreRanges; // Similar to 'filtLocal', but for other
-                                      // addresses/ranges as well. This is useful
-                                      // in hosts acting as routers or NATs.
     vector<std::string> strRanges; // Temp for optargs
-
     vector<string> gaugeLabels = {"srcIP", "dstIP", "dstPort"};
     GaugeVec flowMedGaugeVec = GaugeVec("pping_service_rtt", "Per-flow running" \
             "median RTT from source IP to a given destination IP/port", gaugeLabels);
@@ -569,9 +578,9 @@ int main(int argc, char* const* argv)
         exit(1);
     }
 
-    // Validate strRanges are proper CIDR notation and add to ignoreRanges
+    // Validate strRanges are proper CIDR notation and add to localRanges
     for (auto str: strRanges) {
-        ignoreRanges.push_back(convertStrRange(str));
+        localRanges.push_back(convertStrRange(str));
     }
 
     // Start Prometheus exporter
@@ -589,11 +598,13 @@ int main(int argc, char* const* argv)
             if (liveInp) {
                 snif = new Sniffer(fname, config);
                 if (filtLocal) {
-                    localIP = localAddrOf(fname);
-                    if (localIP.empty()) {
+                    std::string ip = localAddrOf(fname);
+                    if (ip.empty()) {
                         // couldn't get local ip addr
                         filtLocal = false;
                     }
+                    localIP = IPv4Address(ip);
+                    localRanges.push_back(IPv4Range(localIP, localIP));
                 }
             } else {
                 snif = new FileSniffer(fname, config);
