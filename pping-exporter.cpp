@@ -358,7 +358,7 @@ static void process_packet(const Packet& pkt)
 
         // Update Prometheus Summary
         vector<std::string> labelVals = {ipsstr, ipdstr, std::to_string(t_tcp->dport())};
-        flowSummaryVec.WithLabelValues(labelVals).Observe(rtt);
+        flowSummaryVec.WithLabelValues(labelVals).Observe(rtt * 1000); // s to ms
     }
 }
 
@@ -613,9 +613,10 @@ int main(int argc, char* const* argv)
                     if (ip.empty()) {
                         // couldn't get local ip addr
                         filtLocal = false;
+                    } else {
+                        localIP = IPv4Address(ip);
+                        localRanges.push_back(IPv4Range(localIP, localIP));
                     }
-                    localIP = IPv4Address(ip);
-                    localRanges.push_back(IPv4Range(localIP, localIP));
                 }
             } else {
                 snif = new FileSniffer(fname, config);
