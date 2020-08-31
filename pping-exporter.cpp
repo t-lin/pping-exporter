@@ -79,6 +79,7 @@
 #include "promClient.h"
 
 using namespace Tins;
+using namespace EasyProm;
 
 class flowRec
 {
@@ -140,8 +141,10 @@ static vector<IPv4Range> localRanges; // Similar to 'localIP', but for other
                                       // addresses/ranges. This is useful
                                       // in hosts acting as routers or NATs.
 
-// Prometheus Gauge vectors (will be instantiated later in main())
-static GaugeVec flowGaugeVec;
+// Prometheus-related variables
+static std::string listenAddr(":9876"); // HTTP endpoint for Prometheus to scrape
+static vector<std::string> strRanges; // Temp for optargs
+static SummaryVec flowSummaryVec; // Will be instantiated later in main()
 
 // save capture time of packet using its flow + TSval as key.  If key
 // exists, don't change it.  The same TSval may appear on multiple
@@ -353,9 +356,9 @@ static void process_packet(const Packet& pkt)
         ti->t = -t;     //leaves an entry in the TS table to avoid saving this
                         // TSval again, mark it negative to indicate it's been used
 
-        // Update Prometheus Gauge
+        // Update Prometheus Summary
         vector<std::string> labelVals = {ipsstr, ipdstr, std::to_string(t_tcp->dport())};
-        flowGaugeVec.WithLabelValues(labelVals).Set(rtt);
+        flowSummaryVec.WithLabelValues(labelVals).Observe(rtt);
     }
 }
 
@@ -540,13 +543,6 @@ IPv4Range convertStrRange(string range) {
 
 int main(int argc, char* const* argv)
 {
-    // ========== PROMETHEUS EXPORTER ==========
-    std::string listenAddr(":9876"); // HTTP endpoint for Prometheus to scrape
-    vector<std::string> strRanges; // Temp for optargs
-    vector<string> gaugeLabels = {"srcIP", "dstIP", "dstPort"};
-    flowGaugeVec = GaugeVec("pping_service_rtt", "Per-flow RTT " \
-            "from source IP to a given destination IP/port", gaugeLabels);
-
     // Set up signal catching
     struct sigaction action;
     action.sa_handler = signalHandler;
@@ -586,14 +582,21 @@ int main(int argc, char* const* argv)
         exit(1);
     }
 
+    // Start Prometheus exporter
+    // TODO: Make path configurable?
+    std::string listenAddr(":9876"); // HTTP endpoint for Prometheus to scrape
+    StartPromHandler(listenAddr.c_str(), "/metrics");
+
+    vector<string> summaryLabels = {"srcIP", "dstIP", "dstPort"};
+    unordered_map<double, double> summaryObj = {{0.5, 0.05}, {0.9, 0.01}, {0.99, 0.001}};
+    flowSummaryVec = SummaryVec("pping_service_rtt", "Per-flow RTT " \
+            "from source IP to a given destination IP/port", summaryLabels,
+            summaryObj, (int)flowMaxIdle, 10);
+
     // Validate strRanges are proper CIDR notation and add to localRanges
     for (auto str: strRanges) {
         localRanges.push_back(convertStrRange(str));
     }
-
-    // Start Prometheus exporter
-    // TODO: Make path configurable?
-    StartPromServer(listenAddr.c_str(), "/metrics");
 
     {
         SnifferConfiguration config;
