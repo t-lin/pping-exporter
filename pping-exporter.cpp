@@ -362,6 +362,19 @@ static void process_packet(const Packet& pkt)
     }
 }
 
+// Takes a flow record string (srcIP:srcPort+dstIP:dstPort) and parses it to
+// return a vector of label values corresponding to the Summary metric labels
+inline vector<std::string> parseLabels(const std::string& flowStr) {
+    std::string srcIP = flowStr.substr(0, flowStr.find(':'));
+
+    size_t sepIdx = flowStr.find('+');
+    size_t colIdx = flowStr.rfind(':');
+    std::string dstIP = flowStr.substr(sepIdx + 1, colIdx - sepIdx - 1);
+    std::string dstPort = flowStr.substr(colIdx + 1);
+
+    return {srcIP, dstIP, dstPort};
+}
+
 static void cleanUp(double n)
 {
     // erase entry if its TSval was seen more than tsvalMaxAge
@@ -374,12 +387,19 @@ static void cleanUp(double n)
             ++it;
         }
     }
+
+    vector<std::string> labelVals;
     for (auto it = flows.begin(); it != flows.end();) {
         flowRec* fr = it->second;
         if (n - fr->last_tm > flowMaxIdle) {
+            // Delete underlying Prometheus metric in Go, if it exists
+            labelVals = parseLabels(it->first);
+            flowSummaryVec.DeleteLabelValues(labelVals);
+
             delete it->second;
             it = flows.erase(it);
             flowCnt--;
+
             continue;
         }
         ++it;
