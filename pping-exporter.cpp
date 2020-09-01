@@ -525,7 +525,16 @@ static void flushLoop() {
     }
 }
 
-static std::thread flushLoopThread;
+static void cleanUpLoop() {
+    double currTime;
+    while ( !gINTERRUPTED ) {
+        if (offTm > 0) {
+            currTime = (double)(static_cast<int64_t>(Timestamp::current_time().seconds()) - offTm);
+            cleanUp(currTime);  // get rid of stale entries
+        }
+        std::this_thread::sleep_for(std::chrono::seconds((int64_t)tsvalMaxAge));
+    }
+}
 
 static void signalHandler(int sigVal) {
     if (snif) {
@@ -655,11 +664,14 @@ int main(int argc, char* const* argv)
         flushInt /= 100;
     }
 
-    double nxtSum = 0., nxtClean = 0.;
+    double nxtSum = 0.;
 
-    // Start stdout flush loop
-    flushLoopThread = std::thread(flushLoop);
+    // Start stdout flush loop / thread
+    std::thread flushLoopThread = std::thread(flushLoop);
     std::cerr << "Output interval is: " << flushInt << " us" << std::endl;
+
+    // Start flow clean-up loop / thread
+    std::thread cleanUpLoopThread = std::thread(cleanUpLoop);
 
     for (const auto& packet : *snif) {
         process_packet(packet);
@@ -681,11 +693,6 @@ int main(int argc, char* const* argv)
                 not_v4or6 = 0;
             }
             nxtSum = capTm + sumInt;
-
-        }
-        if (capTm >= nxtClean) {
-            cleanUp(capTm);  // get rid of stale entries
-            nxtClean = capTm + tsvalMaxAge;
         }
     }
 
@@ -693,6 +700,7 @@ int main(int argc, char* const* argv)
     cleanUp(capTm + (tsvalMaxAge > flowMaxIdle ? tsvalMaxAge : flowMaxIdle) + 1);
 
     flushLoopThread.join();
+    cleanUpLoopThread.join();
     std::cout << std::endl;
 
     exit(0);
