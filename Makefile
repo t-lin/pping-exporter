@@ -9,8 +9,11 @@ EXENAME = pping-exporter
 
 .PHONY: debug clean
 
-$(EXENAME): pping-exporter.cpp
+$(EXENAME): pping-exporter.cpp $(EASYPROM)/libpromclient.a
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $(EXENAME) $< $(LDFLAGS)
+
+$(EASYPROM)/libpromclient.a: $(EASYPROM)/promClient.h $(EASYPROM)/promClient.go
+	make -C $(EASYPROM) lib
 
 debug: CXXFLAGS += -g
 debug: $(EXENAME)
