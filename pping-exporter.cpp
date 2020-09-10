@@ -639,10 +639,12 @@ int main(int argc, char* const* argv)
                 snif = new Sniffer(fname, config);
                 if (filtLocal) {
                     std::string ip = localAddrOf(fname);
-                    if (ip.empty()) {
-                        // couldn't get local ip addr
+                    if (ip.empty() && localRanges.empty()) {
+                        // Couldn't get local IP address from interface and no
+                        // local ranges specified, disabling filtLocal
+                        printf("WARNING: Unable to determine local addresses, disabling filtLocal\n");
                         filtLocal = false;
-                    } else {
+                    } else if (!ip.empty()) {
                         localIP = IPv4Address(ip);
                         localRanges.push_back(IPv4Range(localIP, localIP));
                     }
